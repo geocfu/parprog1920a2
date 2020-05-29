@@ -288,7 +288,7 @@ int main() {
         }
     }
 
-    // Empty the queue because
+    // Empty the queue
     while (queueSize > 0) {
         receiveMessage();
     }
