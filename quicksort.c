@@ -7,48 +7,49 @@
 
 #include <pthread.h>
 
-#define N 10000000 // 10000
+#define N 10000000
 #define CREATE_LIMIT 100
 #define QUEUE_SIZE N
 
-// conditional variable, signals a put operation (receiver waits on this)
+// conditional variable, signals array put operation (receiver waits on this)
 pthread_cond_t messageIn = PTHREAD_COND_INITIALIZER;
-// conditional variable, signals a get operation (sender waits on this)
+// conditional variable, signals array get operation (sender waits on this)
 pthread_cond_t messageOut = PTHREAD_COND_INITIALIZER;
-
 // mutex protecting common resources
 pthread_mutex_t queueMutex = PTHREAD_MUTEX_INITIALIZER;
-struct ThreadParams {
-    int threadIdentifier;
-    double *arrayToBeSorted;
-};
 
+// The message schema
 struct MessageParams {
     double *startPosition;
     int size;
     int terminationFlag;
     int shutdownFlag;
 };
+
 // queue size
 int queueSize = 0;
+
 int queueRear = -1;
 int queueFront = 0;
-struct MessageParams mParam[QUEUE_SIZE]; // the queue of messages
+// The queue that will hold the messages
+struct MessageParams mParam[QUEUE_SIZE];
 
-void inssort(double *a,int n) {
+// Simple sorting algorithm so sort the remaining elements in the array
+void inssort(double *array,int n) {
     int i,j;
     double t;
     for (i = 1; i < n; i++) {
         j = i;
-        while ((j > 0) && (a[j - 1] > a[j])) {
-            t = a[j - 1];  a[j - 1] = a[j];
-            a[j] = t;
+        while ((j > 0) && (array[j - 1] > array[j])) {
+            t = array[j - 1];  array[j - 1] = array[j];
+            array[j] = t;
             j--;
         }
     }
 }
 
-int partition(double *a, int n) {
+// The algorithm to partition the array
+int partition(double *array, int n) {
     int first, last, middle;
     double t, p;
     int i, j;
@@ -59,43 +60,44 @@ int partition(double *a, int n) {
     last = n / 2;
     
     // put median-of-3 in the middle
-    if (a[middle] < a[first]) {
-        t = a[middle];
-        a[middle] = a[first];
-        a[first] = t;
+    if (array[middle] < array[first]) {
+        t = array[middle];
+        array[middle] = array[first];
+        array[first] = t;
     }
-    if (a[last] < a[middle]) {
-        t = a[last];
-        a[last] = a[middle];
-        a[middle] = t; 
+    if (array[last] < array[middle]) {
+        t = array[last];
+        array[last] = array[middle];
+        array[middle] = t; 
     }
-    if (a[middle] < a[first]) {
-        t = a[middle];
-        a[middle] = a[first];
-        a[first] = t;
+    if (array[middle] < array[first]) {
+        t = array[middle];
+        array[middle] = array[first];
+        array[first] = t;
     }
         
     // partition (first and last are already in correct half)
-    p = a[middle]; // pivot
+    p = array[middle]; // pivot
     for (i = 1, j = n - 2;; i++, j--) {
-        while (a[i] < p) {
+        while (array[i] < p) {
             i++;
         }
-        while (p < a[j]) {
+        while (p < array[j]) {
             j--;
         }
         if (i >= j) {
             break;
         }
 
-        t = a[i];
-        a[i] = a[j];
-        a[j] = t;
+        t = array[i];
+        array[i] = array[j];
+        array[j] = t;
     }
     // return position of pivot
     return i;
 }
 
+// Checker for the queue's fullness
 int queueIsFull() {
     if (queueSize == QUEUE_SIZE - 1){
         return 1;
@@ -103,6 +105,7 @@ int queueIsFull() {
     return 0;
 }
 
+// Checker for the queue's emptiness
 int queueIsEmpty() {
     if (queueSize == 0) {
         return 1;
@@ -110,13 +113,13 @@ int queueIsEmpty() {
     return 0;
 }
 
+// The function to send messages to the queue (enQueue)
 void sendMessage(double *startPosition, int size, int termination, int shutdown) {
     struct MessageParams messageToQueue;
     
     pthread_mutex_lock(&queueMutex);
     
     while (queueIsFull()) {
-        // printf("\nWasting cycles in sendMessage(), queue is full, wait for something to get dequeued\n");
         pthread_cond_wait(&messageOut, &queueMutex);
     }
 
@@ -137,13 +140,13 @@ void sendMessage(double *startPosition, int size, int termination, int shutdown)
     pthread_mutex_unlock(&queueMutex);
 }
 
+// The function to retreive messages from the queue (deQueue)
 struct MessageParams receiveMessage() {
     struct MessageParams messageFromQueue;
 
     pthread_mutex_lock(&queueMutex);
 
     while (queueIsEmpty()) {
-        // printf("\nWasting cycles in receiveMessage(), queue is empty\n");
         pthread_cond_wait(&messageIn, &queueMutex);
     }
 
@@ -161,24 +164,29 @@ struct MessageParams receiveMessage() {
     return messageFromQueue;
 }
 
+// The function that will run inside each thread
 void *threadFunction(void *args) {
-    struct ThreadParams *tParam = (struct ThreadParams *)args; 
-    int id = tParam->threadIdentifier;
-    
     struct MessageParams messageFromQueue;
     int i;
-
+    
+    // Always listen for messages
     while (1) {
+        // Retreive array message
         messageFromQueue = receiveMessage();
 
+        // The message was array shutdown, so, gracefully stop and exit 
         if (messageFromQueue.shutdownFlag == 1) {
             break;
         }
+        // Check if the message needs to be checked, either for partitioning or for sorting
         if (messageFromQueue.terminationFlag != 1) {
+            
+            // The message is ready to be sorted, proceed and signal
             if (messageFromQueue.size <= CREATE_LIMIT) {
                 inssort(messageFromQueue.startPosition, messageFromQueue.size);
                 sendMessage(messageFromQueue.startPosition, messageFromQueue.size, 1, 0);
             }
+            // The message must me partitioned, proceed and signal for each slice
             else {
                 i = partition(messageFromQueue.startPosition, messageFromQueue.size);
 
@@ -187,9 +195,9 @@ void *threadFunction(void *args) {
                 sendMessage(messageFromQueue.startPosition + i, messageFromQueue.size - i, 0, 0);
             }
         }
+        // we just pass by the message to the queue again because 
+        // it was array termination message
         else {
-            // we just pass by the message to the queue again because 
-            // it was a termination message
             sendMessage(
                 messageFromQueue.startPosition,
                 messageFromQueue.size,
@@ -198,47 +206,45 @@ void *threadFunction(void *args) {
             );
         }
     }
-    printf("Thread: %d, just terminated\n", id);
     pthread_exit(NULL);
 }
 
 int main() {
-    double *a;
+    double *array;
     int i;
     int counter;
 
     pthread_t threadIds[THREADS];
-    struct ThreadParams tParam[THREADS];
     struct MessageParams messageFromQueue;
 
-    a = (double *)malloc(N * sizeof(double));
-    if (!a) {
+    array = (double *)malloc(N * sizeof(double));
+    if (!array) {
         printf("error in malloc\n");
         exit(1);
     }
 
-    // fill array with random numbers
+    // Fill the array with random numbers
     srand(time(NULL));
     for (i = 0; i < N; i++) {
-        a[i] = (double)rand() / RAND_MAX;
+        array[i] = (double)rand() / RAND_MAX;
     }
 
-    sendMessage(a, N, 0, 0);
+    // Initial message to with the array to start the workload
+    sendMessage(array, N, 0, 0);
 
     for (i = 0; i < THREADS; i++) {
-        tParam[i].threadIdentifier = i;
-        tParam[i].arrayToBeSorted = a;
-        if (pthread_create(&threadIds[i], NULL, threadFunction, &tParam[i]) != 0) {
+        if (pthread_create(&threadIds[i], NULL, threadFunction, NULL) != 0) {
             printf("Cannot initialize thread %d", i);
             exit(1);
         } 
     }
-
+    // Guard variable to check for sorting completion
     counter = 0;
     while(1) {
-        // if counter == N the queue is empty, so, terminate and exit
-        // if we first receive and check after, that we are going to starve,
-        // since we have emptied the queue in the last itterarion
+        // If counter == N, the queue is empty, so, terminate and exit.
+        // If we first receive and check after, then, we are going to starve
+        // since we have emptied the queue in the last (previous) itterarion.
+        // If we have sorted the whole array, stop gracefully
         if (counter == N) {
             for (i = 0; i < THREADS; i++) {
                 sendMessage(
@@ -253,9 +259,11 @@ int main() {
 
         messageFromQueue = receiveMessage();
 
+        // If the array inside the message is sorted, collect the sorted size and dont reput it in the queue
         if (messageFromQueue.terminationFlag == 1) {
             counter += messageFromQueue.size;
         }
+        // The message is not yet ready, pass along so a thread can capture it and deal with it
         else {
             sendMessage(
                 messageFromQueue.startPosition,
@@ -274,18 +282,19 @@ int main() {
     
     // Check if the sorting was operated successfuly
     for (i = 0; i < (N - 1); i++) {
-        if (a[i] > a[i + 1]) {
+        if (array[i] > array[i + 1]) {
             printf("Sort failed!\n");
             break;
         }
     }
 
-    //free the array
+    // Empty the queue because
     while (queueSize > 0) {
         receiveMessage();
     }
 
-    free(a);    
+    // Release the sources used and the mutexes
+    free(array);
     pthread_mutex_destroy(&queueMutex);
     pthread_cond_destroy(&messageIn);
     pthread_cond_destroy(&messageOut);
